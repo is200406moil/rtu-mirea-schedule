@@ -1,27 +1,32 @@
 # Schedule-RTU
 
-Forked from https://github.com/RTUITLab/Schedule-RTU-API
-
-Based on https://github.com/YaSlavar/parser_mirea
-
 
 Service for getting jsons with a schedule for a given group of RTU MIREA
+
+The app now reads the public RTU MIREA schedule site directly, stores parsed group schedules in MongoDB, and exposes them through the API.
 
 # Build service from Docker image
 Requirements:
 * Docker
 
-## Run container:
+## Run locally with Docker Compose
 
-Clone or download this repo and build container 
-* ```docker build -t schedule-rtu:latest .```
+Start the stack:
+* ```docker compose up -d --build```
 
-Run container
-* ```docker run -it -p 5000:5000 schedule-rtu:latest```
+Open the API docs:
+* ```http://localhost:5000/docs```
 
-App running on ```http://0.0.0.0:5000/```
+Refresh the schedule cache:
+* ```POST http://localhost:5000/api/refresh?secret_key=secret```
 
-You can find api on ```http://localhost:5000/redoc ```
+Get the list of available groups:
+* ```GET http://localhost:5000/api/schedule/groups```
+
+Get the full schedule for a group:
+* ```GET http://localhost:5000/api/schedule/{group}/full_schedule```
+
+The root path redirects to ```/docs```. If you set a different refresh secret in ```.env``, use that value in the refresh request.
 
 ## Deploy
 

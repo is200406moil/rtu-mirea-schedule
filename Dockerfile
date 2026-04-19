@@ -1,4 +1,4 @@
-FROM tiangolo/uvicorn-gunicorn-fastapi:latest
+﻿FROM tiangolo/uvicorn-gunicorn-fastapi:latest
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

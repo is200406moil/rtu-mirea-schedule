@@ -1,7 +1,10 @@
-from typing import List
+import asyncio
+import logging
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Path
 from fastapi.responses import JSONResponse
+from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.exceptions import HTTPException
 from starlette.status import HTTP_404_NOT_FOUND
 
@@ -10,7 +13,7 @@ from app.core.schedule_utils import ScheduleUtils
 from app.crud.schedule import (find_room, find_teacher, get_full_schedule,
                                get_groups, get_groups_stats,
                                update_group_stats)
-from app.database.database import AsyncIOMotorClient, get_database
+from app.database.database import get_database
 from app.models.schedule import (GroupsListResponse, GroupStatsModel,
                                  RoomScheduleModel, ScheduleModel,
                                  TeacherSchedulesModelResponse,
@@ -18,6 +21,31 @@ from app.models.schedule import (GroupsListResponse, GroupStatsModel,
 from app.schedule_parser.excel import parse_schedule
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+_refresh_task: asyncio.Task | None = None
+_refresh_status: dict[str, str] = {"state": "idle", "message": "Refresh was not started yet"}
+
+
+def _is_refresh_allowed(secret_key: str | None) -> bool:
+    if (
+        SECRET_REFRESH_KEY is None
+        or SECRET_REFRESH_KEY == ""
+        or SECRET_REFRESH_KEY == "None"
+    ):
+        return True
+    return secret_key == SECRET_REFRESH_KEY
+
+
+async def _run_refresh(db: AsyncIOMotorClient) -> None:
+    global _refresh_status
+
+    _refresh_status = {"state": "running", "message": "Refresh in progress"}
+    try:
+        await parse_schedule(db)
+        _refresh_status = {"state": "ok", "message": "Refresh completed"}
+    except Exception as error:
+        logger.exception("Refresh failed")
+        _refresh_status = {"state": "failed", "message": str(error)}
 
 
 @router.post(
@@ -26,19 +54,31 @@ router = APIRouter()
     response_description="Return 'ok' after updating",
 )
 async def refresh(
-    secret_key: str = None, db: AsyncIOMotorClient = Depends(get_database)
+    secret_key: Optional[str] = None, db: AsyncIOMotorClient = Depends(get_database)
 ):
-    if (
-        SECRET_REFRESH_KEY is None
-        or SECRET_REFRESH_KEY == ""
-        or SECRET_REFRESH_KEY == "None"
-    ):
-        await parse_schedule(db)
-        return JSONResponse({"status": "ok"})
-    elif secret_key == SECRET_REFRESH_KEY:
-        await parse_schedule(db)
-        return JSONResponse({"status": "ok"})
-    return JSONResponse({"status": "Invalid secret API key"})
+    global _refresh_task, _refresh_status
+
+    if not _is_refresh_allowed(secret_key):
+        return JSONResponse({"status": "Invalid secret API key"})
+
+    if _refresh_task and not _refresh_task.done():
+        return JSONResponse({"status": "already_running", "detail": _refresh_status})
+
+    _refresh_status = {"state": "running", "message": "Refresh in progress"}
+    _refresh_task = asyncio.create_task(_run_refresh(db))
+    return JSONResponse({"status": "started", "detail": _refresh_status})
+
+
+@router.get(
+    "/refresh/status",
+    description="Get current refresh status",
+)
+async def refresh_status(secret_key: Optional[str] = None):
+    if not _is_refresh_allowed(secret_key):
+        return JSONResponse({"status": "Invalid secret API key"})
+
+    running = bool(_refresh_task and not _refresh_task.done())
+    return JSONResponse({"running": running, "detail": _refresh_status})
 
 
 @router.get(

@@ -1,4 +1,3 @@
-import asyncio
 from typing import List
 
 from app.core.config import (DATABASE_NAME, SCHEDULE_COLLECTION_NAME,
@@ -7,16 +6,14 @@ from app.core.config import (DATABASE_NAME, SCHEDULE_COLLECTION_NAME,
 from app.database.database import AsyncIOMotorClient
 from app.models.schedule import (GroupStatsModel, LessonModel, RoomLessonModel,
                                  RoomScheduleModel,
-                                 ScheduleByWeekdaysModelResponse,
+                                 ScheduleByWeekdaysModel,
                                  ScheduleModel, ScheduleUpdateModel,
                                  TeacherLessonModel,
                                  TeacherSchedulesModelResponse)
 
-loop = asyncio.get_event_loop()
-
 
 async def save_schedule(
-    conn: AsyncIOMotorClient, group: str, schedule: ScheduleByWeekdaysModelResponse
+    conn: AsyncIOMotorClient, group: str, schedule: ScheduleByWeekdaysModel
 ):
     await conn[DATABASE_NAME][SCHEDULE_COLLECTION_NAME].replace_one(
         {"group": group}, {"group": group, "schedule": schedule.dict()}, upsert=True

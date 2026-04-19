@@ -1,211 +1,258 @@
+import asyncio
 import datetime
-import json
 import logging
-import os
+import re
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import groupby
-from typing import Generator
+from typing import Any
 
-import rtu_schedule_parser.utils.academic_calendar as academic_calendar
+import requests
 from motor.motor_asyncio import AsyncIOMotorClient
-from rtu_schedule_parser import ExcelScheduleParser, LessonsSchedule
-from rtu_schedule_parser.constants import Degree, Institute, ScheduleType
-from rtu_schedule_parser.downloader import ScheduleDownloader
-from rtu_schedule_parser.schedule import (ExamsSchedule, LessonEmpty,
-                                          LessonsSchedule)
 
 from ..crud.schedule import save_schedule
 from ..models.schedule import (LessonModel, ScheduleByWeekdaysModel,
                                ScheduleLessonsModel)
+from ..core.schedule_utils import ScheduleUtils
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-def _parse_document(doc) -> list[LessonsSchedule | ExamsSchedule]:
-    logger.info(f"Обработка документа: {doc}")
-    try:
-        parser = ExcelScheduleParser(doc[0], doc[1], doc[2], doc[3])
-        return parser.parse(force=True).get_schedule()
-    except Exception:
-        logger.error(f"Парсинг завершился с ошибкой ({doc})")
+SCHEDULE_OF_BASE_URL = "https://schedule-of.mirea.ru"
+SEARCH_URL = f"{SCHEDULE_OF_BASE_URL}/schedule/api/search"
+ICAL_URL_TEMPLATE = f"{SCHEDULE_OF_BASE_URL}/schedule/api/ical/{{schedule_target}}/{{group_id}}?includeMeta=true"
+GROUP_NAME_RE = re.compile(r"^[А-ЯA-ZЁ]{2,6}-\d{2}-\d{2}$")
+REQUEST_HEADERS = {"User-Agent": "rtu-mirea-schedule-bot/1.0"}
 
 
-def _get_documents_by_json(docs_dir: str) -> list:
-    # Формат json:
-    # [
-    #     {
-    #         "file": "./расписание колледж.xlsx",
-    #         "institute": "КПК",
-    #         "type": 1,
-    #         "degree": 4
-    #     }
-    # ]
-    try:
-        with open(os.path.join(docs_dir, "files.json"), "r") as f:
-            files = json.load(f)
+async def _request(
+    client: requests.Session,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = 20,
+    retries: int = 5,
+) -> requests.Response:
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = await asyncio.to_thread(
+                client.get,
+                url,
+                params=params,
+                timeout=timeout,
+                headers=REQUEST_HEADERS,
+            )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as error:
+            last_error = error
+            if attempt < retries:
+                await asyncio.sleep(min(2.0, 0.25 * attempt))
+                continue
+            break
 
-            documents = []
-
-            for file in files:
-                file_path = os.path.join(docs_dir, file["file"])
-                logger.info(f"Файл {file['file']} добавлен на парсинг из `files.json`")
-
-                if not os.path.exists(file_path):
-                    logger.error(
-                        f"Файл {file['file']} не найден. См. `files.json`. Пропускаем..."
-                    )
-                    continue
-
-                documents.append(
-                    (
-                        file_path,
-                        academic_calendar.get_period(datetime.datetime.now()),
-                        Institute.get_by_short_name(file["institute"]),
-                        Degree(file["degree"]),
-                    )
-                )
-
-            return documents
-
-    except FileNotFoundError:
-        logger.info("`files.json` не найден. Пропускаем...")
-        return []
+    raise RuntimeError(f"Request failed for {url}: {last_error}")
 
 
-def _get_documents() -> list:
-    """Get documents for specified institute and degree"""
-    docs_dir = os.path.dirname(os.path.abspath(__file__))
-    docs_dir = os.path.join(docs_dir, "docs")
+def _unfold_ical_lines(raw_ical: str) -> list[str]:
+    lines = raw_ical.splitlines()
+    unfolded: list[str] = []
 
-    downloader = ScheduleDownloader(base_file_dir=docs_dir)
+    for line in lines:
+        if line.startswith((" ", "\t")) and unfolded:
+            unfolded[-1] += line[1:]
+        else:
+            unfolded.append(line)
 
-    if os.path.exists(docs_dir):
-        for root, dirs, files in os.walk(docs_dir, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-    else:
-        os.mkdir(docs_dir)
+    return unfolded
 
-    all_docs = downloader.get_documents(
-        specific_schedule_types={ScheduleType.SEMESTER},
-        specific_degrees={Degree.BACHELOR, Degree.MASTER, Degree.PHD},
-        specific_institutes=set(Institute),
+
+def _parse_ical_datetime(value: str):
+    if "T" in value:
+        value = value.rstrip("Z")
+        return datetime.datetime.strptime(value, "%Y%m%dT%H%M%S")
+    return datetime.datetime.strptime(value, "%Y%m%d")
+
+
+def _extract_field(line: str) -> tuple[str, str]:
+    key, value = line.split(":", 1)
+    return key, value.strip()
+
+
+def _lesson_weeks(dt_start: datetime.datetime, rrule: str) -> list[int]:
+    if "INTERVAL=2" not in rrule:
+        return [1, 2]
+
+    week_number = ScheduleUtils.get_week(dt_start)
+    return [1] if week_number % 2 else [2]
+
+
+async def _extract_group_items(client: requests.Session) -> list[dict[str, Any]]:
+    page_token = None
+    groups: dict[str, dict[str, Any]] = {}
+
+    for _ in range(500):
+        params = {"limit": 100, "match": "-"}
+        if page_token:
+            params["pageToken"] = page_token
+
+        try:
+            payload = (await _request(client, SEARCH_URL, params=params, timeout=20)).json()
+        except Exception as error:
+            logger.error("Failed to read search page token=%s: %s", page_token, error)
+            break
+
+        for item in payload.get("data", []):
+            title = item.get("targetTitle", "")
+            if item.get("scheduleTarget") == 1 and GROUP_NAME_RE.fullmatch(title):
+                groups[title] = item
+
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+        # Avoid aggressive request bursts that can trigger upstream disconnects.
+        await asyncio.sleep(0.05)
+
+    result = list(groups.values())
+    logger.info("Discovered %s groups in schedule-of API", len(result))
+    return result
+
+
+async def _parse_group_ical(
+    client: requests.Session,
+    group_name: str,
+    schedule_target: int,
+    group_id: int,
+) -> ScheduleByWeekdaysModel:
+    response = await _request(
+        client,
+        ICAL_URL_TEMPLATE.format(schedule_target=schedule_target, group_id=group_id),
+        timeout=30,
     )
 
-    logger.info(f"Найдено {len(all_docs)} документов для парсинга")
+    lines = _unfold_ical_lines(response.text)
+    lessons_by_weekdays = defaultdict(list)
 
-    downloaded = downloader.download_all(all_docs)
+    in_event = False
+    event_lines: list[str] = []
+    for line in lines:
+        if line == "BEGIN:VEVENT":
+            in_event = True
+            event_lines = []
+            continue
 
-    # сначала документы с Degree.PHD, потом Degree.MASTER, потом Degree.BACHELOR (то есть по убыванию)
-    downloaded = sorted(downloaded, key=lambda x: x[0].degree, reverse=True)
+        if line == "END:VEVENT":
+            in_event = False
+            event = {}
+            for event_line in event_lines:
+                if ":" not in event_line:
+                    continue
+                key, value = _extract_field(event_line)
+                event[key] = value
 
-    logger.info(f"Скачано {len(downloaded)} файлов")
+            dtstart_raw = next((v for k, v in event.items() if k.startswith("DTSTART")), None)
+            dtend_raw = next((v for k, v in event.items() if k.startswith("DTEND")), None)
+            if not dtstart_raw or not dtend_raw:
+                continue
 
-    documents = [
-        (doc[1], doc[0].period, doc[0].institute, doc[0].degree) for doc in downloaded
-    ]
-    
-    docs_dir = os.path.dirname(os.path.abspath(__file__))
-    docs_dir = os.path.join(docs_dir, "..", "..", "docs")
-    
-    documents += _get_documents_by_json(docs_dir)
+            dt_start = _parse_ical_datetime(dtstart_raw)
+            dt_end = _parse_ical_datetime(dtend_raw)
+            if dt_start.hour == 0 and dt_end.hour == 0:
+                continue
 
-    return documents
+            weekday = dt_start.isoweekday()
+            if weekday > 6:
+                continue
 
+            discipline = event.get("X-META-DISCIPLINE", "").strip()
+            lesson_type = event.get("X-META-LESSON_TYPE", "").strip()
+            if not discipline:
+                summary = event.get("SUMMARY", "").strip()
+                if " " in summary:
+                    lesson_type, discipline = summary.split(" ", 1)
+                else:
+                    discipline = summary
 
-def _parse() -> Generator[list[LessonsSchedule | ExamsSchedule], None, None]:
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        tasks = []
-        for doc in _get_documents():
-            task = executor.submit(_parse_document, doc)
-            tasks.append(task)
+            teacher = event.get("X-META-TEACHER", "").strip()
+            teachers = [teacher] if teacher else []
 
-        for future in as_completed(tasks):
-            if (
-                schedules := future.result()
-            ):  # type: list[LessonsSchedule | ExamsSchedule]
-                groups = {schedule.group for schedule in schedules}
-                logger.info(f"Получено расписание документа. Группы: {groups}")
-                yield schedules
+            room = event.get("X-META-AUDITORIUM", "").strip() or event.get("LOCATION", "").strip()
+            rooms = [room] if room else []
 
+            time_start = dt_start.strftime("%H:%M")
+            time_end = dt_end.strftime("%H:%M")
+            lesson_number = f"{time_start}-{time_end}"
+
+            lesson = LessonModel(
+                name=discipline,
+                weeks=_lesson_weeks(dt_start, event.get("RRULE", "")),
+                time_start=time_start,
+                time_end=time_end,
+                types=lesson_type,
+                teachers=teachers,
+                rooms=rooms,
+            )
+
+            lessons_by_weekdays[str(weekday)].append((lesson_number, lesson))
+            continue
+
+        if in_event:
+            event_lines.append(line)
+
+    by_day_models = {}
+    for weekday in ["1", "2", "3", "4", "5", "6"]:
+        day_lessons = lessons_by_weekdays.get(weekday, [])
+        grouped = []
+        if day_lessons:
+            day_lessons = sorted(day_lessons, key=lambda item: item[0])
+            grouped = [list(g) for _, g in groupby(day_lessons, key=lambda item: item[0])]
+
+        by_day_models[weekday] = ScheduleLessonsModel(
+            lessons=[[lesson for _, lesson in slot] for slot in grouped]
+        )
+
+    return ScheduleByWeekdaysModel(
+        monday=by_day_models["1"],
+        tuesday=by_day_models["2"],
+        wednesday=by_day_models["3"],
+        thursday=by_day_models["4"],
+        friday=by_day_models["5"],
+        saturday=by_day_models["6"],
+    )
 
 async def parse_schedule(conn: AsyncIOMotorClient) -> None:
-    """Parse parser and save it to database"""
+    """Parse schedule-of API and save parsed group schedules to database."""
 
-    for schedules in _parse():
-        for schedule in schedules:
-            try:
-                # В модели расписания 1-6 -- дни недели. По ключу 1 лежит расписание на понедельник,
-                # 2 -- на вторник и т.д. "lessons" содержит список списков пар. Первый список относится к номеру пары,
-                # второй список -- различные пары в это время
-                lessons = schedule.lessons
+    client = requests.Session()
+    try:
+        groups = await _extract_group_items(client)
+    except Exception as error:
+        logger.error("Failed to discover groups from schedule-of API: %s", error)
+        client.close()
+        return
+    if not groups:
+        logger.warning("No groups were discovered in schedule-of API")
+        client.close()
+        return
 
-                lessons_by_weekdays = defaultdict(list)
+    saved = 0
+    for group in groups:
+        group_name = group.get("targetTitle", "")
+        group_id = group.get("id")
+        schedule_target = group.get("scheduleTarget")
 
-                for lesson in lessons:
-                    weekday = lesson.weekday.value[0]
+        if not group_name or group_id is None or schedule_target is None:
+            continue
 
-                    if type(lesson) is not LessonEmpty:
-                        room = lesson.room
-                        if room:
-                            room = [
-                                f"{room.name} ({room.campus.short_name})"
-                                if room.campus is not None
-                                else room.name
-                            ]
-                        else:
-                            room = []
+        try:
+            by_weekdays = await _parse_group_ical(client, group_name, schedule_target, group_id)
+            await save_schedule(conn, group_name, by_weekdays)
+            saved += 1
+        except Exception as error:
+            logger.error("Failed to parse %s: %s", group_name, error)
 
-                        name = lesson.name
+        await asyncio.sleep(0.02)
 
-                        if lesson.subgroup:
-                            name += f" ({lesson.subgroup} подгруппа)"
-
-                        lesson = LessonModel(
-                            name=name,
-                            weeks=lesson.weeks,
-                            time_start=lesson.time_start.strftime("%-H:%M"),
-                            time_end=lesson.time_end.strftime("%-H:%M"),
-                            types=lesson.type.value if lesson.type else "",
-                            teachers=lesson.teachers,
-                            rooms=room,
-                        )
-
-                    lessons_by_weekdays[str(weekday)].append(lesson)
-
-                # Объединяем пары, которые проходят в одно и то же время и в один день недели
-                for weekday, lessons in lessons_by_weekdays.items():
-                    lessons_by_weekdays[weekday] = [
-                        list(g) for k, g in groupby(lessons, lambda x: x.time_start)
-                    ]
-
-                # Удаляем пустые пары (LessonEmpty), конвертируем в ScheduleLessonsModel
-                for weekday, lessons in lessons_by_weekdays.items():
-                    lessons_by_weekdays[weekday] = ScheduleLessonsModel(
-                        lessons=[
-                            [
-                                lesson
-                                for lesson in lessons_by_weekday
-                                if type(lesson) is not LessonEmpty
-                            ]
-                            for lessons_by_weekday in lessons
-                        ]
-                    )
-
-                by_weekdays = ScheduleByWeekdaysModel(
-                    monday=lessons_by_weekdays["1"],
-                    tuesday=lessons_by_weekdays["2"],
-                    wednesday=lessons_by_weekdays["3"],
-                    thursday=lessons_by_weekdays["4"],
-                    friday=lessons_by_weekdays["5"],
-                    saturday=lessons_by_weekdays["6"],
-                )
-
-                await save_schedule(conn, schedule.group, by_weekdays)
-
-            except Exception as e:
-                logger.error(f"Error while parsing schedule: {e}")
+    client.close()
+    logger.info("Saved schedules for %s groups", saved)
