@@ -70,7 +70,7 @@ services:
     image: curlimages/curl:8.8.0
     environment:
       SECRET_REFRESH_KEY: ${SECRET_REFRESH_KEY}
-    command: [ "sh", "-c", "while true; do if ! curl -fsS \"http://backend:5000/api/refresh?secret_key=${SECRET_REFRESH_KEY}\" >/dev/null; then echo \"Refresh request failed for /api/refresh at:\"; date -u +%Y-%m-%dT%H:%M:%SZ; fi; sleep 3600; done" ]
+    command: [ "sh", "-c", "while true; do if ! curl -fsS -G --data-urlencode \"secret_key=$$SECRET_REFRESH_KEY\" \"http://backend:5000/api/refresh\" >/dev/null; then code=$$?; echo \"Refresh request failed for /api/refresh at:\"; date -u +%Y-%m-%dT%H:%M:%SZ; echo \"curl exit code: $$code\"; fi; sleep 3600; done" ]
     restart: always
     networks:
       - proxy
