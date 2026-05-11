@@ -25,8 +25,6 @@ services:
         INSTALL_DEV: ${INSTALL_DEV-false}
     depends_on:
       - mongodb
-    volumes:
-      - ./docs:/app/docs # schedule docs
     env_file:
       - .env
     ports:

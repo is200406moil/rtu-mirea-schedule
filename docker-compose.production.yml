@@ -50,12 +50,8 @@ services:
       context: .
       args:
         INSTALL_DEV: ${INSTALL_DEV-true}
-    command: /start-reload.sh
     env_file:
       - .env
-    volumes:
-      - .:/app
-      - ./docs:/app/docs # schedule docs
     environment:
       VIRTUAL_HOST: ${DOMAIN-schedule.mirea.ninja}
       DEBUG: false
@@ -72,12 +68,9 @@ services:
 
   cron:
     image: alpine:latest
-    volumes:
-      - .:/app
-      - ./cron:/etc/cron.d/my-cron
     environment:
       SECRET_REFRESH_KEY: ${SECRET_REFRESH_KEY}
-    command: [ "sh", "-c", "crond -f -l 8 -L /dev/stdout && tail -f /dev/null" ]
+    command: [ "sh", "-c", "while true; do wget -qO- --no-check-certificate \"http://backend:5000/api/refresh?secret_key=$SECRET_REFRESH_KEY\" >/dev/null 2>&1; sleep 3600; done" ]
     restart: always
     networks:
       - proxy
