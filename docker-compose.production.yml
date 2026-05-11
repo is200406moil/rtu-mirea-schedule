@@ -67,10 +67,10 @@ services:
       - default
 
   cron:
-    image: alpine:3.20
+    image: curlimages/curl:8.8.0
     environment:
       SECRET_REFRESH_KEY: ${SECRET_REFRESH_KEY}
-    command: [ "sh", "-c", "while true; do if ! wget -qO- \"http://backend:5000/api/refresh?secret_key=${SECRET_REFRESH_KEY}\" >/dev/null 2>&1; then echo \"Refresh request failed at:\"; date -u +%Y-%m-%dT%H:%M:%SZ; fi; sleep 3600; done" ]
+    command: [ "sh", "-c", "while true; do if ! curl -fsS \"http://backend:5000/api/refresh?secret_key=${SECRET_REFRESH_KEY}\" >/dev/null; then echo \"Refresh request failed for /api/refresh at:\"; date -u +%Y-%m-%dT%H:%M:%SZ; fi; sleep 3600; done" ]
     restart: always
     networks:
       - proxy
