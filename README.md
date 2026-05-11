@@ -30,6 +30,8 @@ The root path redirects to ```/docs```. If you set a different refresh secret in
 
 ## Deploy
 
+`docker-compose.production.yml` запускает `backend` и `cron` без bind-mount исходников, поэтому приложение полностью упаковано в контейнеры.
+
 Run next command to generate swarm stack file
 ```bash
 # bash
