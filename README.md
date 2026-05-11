@@ -1,5 +1,6 @@
 # Schedule-RTU
 
+Suggested remote repository name: `rtu-mirea-schedule-api`
 
 Service for getting jsons with a schedule for a given group of RTU MIREA
 
