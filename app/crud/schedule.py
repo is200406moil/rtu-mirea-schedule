@@ -1,26 +1,35 @@
-from typing import List
+from pymongo import AsyncMongoClient
 
-from app.core.config import (DATABASE_NAME, SCHEDULE_COLLECTION_NAME,
-                             SCHEDULE_GROUPS_STATS,
-                             SCHEDULE_UPDATES_COLLECTION)
-from app.database.database import AsyncIOMotorClient
-from app.models.schedule import (GroupStatsModel, LessonModel, RoomLessonModel,
-                                 RoomScheduleModel,
-                                 ScheduleByWeekdaysModel,
-                                 ScheduleModel, ScheduleUpdateModel,
-                                 TeacherLessonModel,
-                                 TeacherSchedulesModelResponse)
+from app.core.config import (
+    DATABASE_NAME,
+    SCHEDULE_COLLECTION_NAME,
+    SCHEDULE_GROUPS_STATS,
+    SCHEDULE_UPDATES_COLLECTION,
+)
+from app.models.schedule import (
+    GroupStatsModel,
+    LessonModel,
+    RoomLessonModel,
+    RoomScheduleModel,
+    ScheduleByWeekdaysModel,
+    ScheduleModel,
+    ScheduleUpdateModel,
+    TeacherLessonModel,
+    TeacherSchedulesModelResponse,
+)
 
 
 async def save_schedule(
-    conn: AsyncIOMotorClient, group: str, schedule: ScheduleByWeekdaysModel
+    conn: AsyncMongoClient, group: str, schedule: ScheduleByWeekdaysModel
 ):
     await conn[DATABASE_NAME][SCHEDULE_COLLECTION_NAME].replace_one(
-        {"group": group}, {"group": group, "schedule": schedule.dict()}, upsert=True
+        {"group": group},
+        {"group": group, "schedule": schedule.model_dump()},
+        upsert=True,
     )
 
 
-async def get_full_schedule(conn: AsyncIOMotorClient, group_name: str) -> ScheduleModel:
+async def get_full_schedule(conn: AsyncMongoClient, group_name: str) -> ScheduleModel:
     """Получение полного расписания для выбранной группы"""
     schedule = await conn[DATABASE_NAME][SCHEDULE_COLLECTION_NAME].find_one(
         {"group": group_name}, {"_id": 0}
@@ -38,7 +47,7 @@ async def get_full_schedule(conn: AsyncIOMotorClient, group_name: str) -> Schedu
         return ScheduleModel(group=schedule["group"], schedule=schedule_with_num_keys)
 
 
-async def get_groups(conn: AsyncIOMotorClient) -> List[str]:
+async def get_groups(conn: AsyncMongoClient) -> list[str]:
     """Получение списка всех групп, для которых доступно расписание"""
     cursor = conn[DATABASE_NAME][SCHEDULE_COLLECTION_NAME].find(
         {}, {"group": 1, "_id": 0}
@@ -49,7 +58,7 @@ async def get_groups(conn: AsyncIOMotorClient) -> List[str]:
 
 
 async def find_teacher(
-    conn: AsyncIOMotorClient, teacher_name: str
+    conn: AsyncMongoClient, teacher_name: str
 ) -> TeacherSchedulesModelResponse:
     # todo: [А-Яа-я]+\s+[А-Яа-я]\.\s*[А-Я]\.
     request_data = {
@@ -148,48 +157,48 @@ async def find_teacher(
         return teacher_schedule
 
 
-async def find_room(conn: AsyncIOMotorClient, room_name: str) -> RoomScheduleModel:
+async def find_room(conn: AsyncMongoClient, room_name: str) -> RoomScheduleModel:
     request_data = {
         "$or": [
             {
                 "schedule.monday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
             {
                 "schedule.tuesday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
             {
                 "schedule.wednesday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
             {
                 "schedule.thursday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
             {
                 "schedule.friday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
             {
                 "schedule.saturday.lessons": {
                     "$elemMatch": {
-                        "$elemMatch": {"room": {"$regex": room_name, "$options": "i"}}
+                        "$elemMatch": {"rooms": {"$regex": room_name, "$options": "i"}}
                     }
                 }
             },
@@ -217,9 +226,18 @@ async def find_room(conn: AsyncIOMotorClient, room_name: str) -> RoomScheduleMod
             lessons_in_day = schedule_with_num_keys[str(i)]["lessons"]
             for lesson_num in range(len(lessons_in_day)):
                 for lesson in lessons_in_day[lesson_num]:
-                    if lesson["room"].lower().find(room_name.lower()) != -1:
+                    matching_room = next(
+                        (
+                            room
+                            for room in lesson.get("rooms", [])
+                            if room_name.lower() in room.lower()
+                        ),
+                        None,
+                    )
+                    if matching_room:
                         room_lesson = RoomLessonModel(
                             group=schedule["group"],
+                            room=matching_room,
                             weekday=i,
                             lesson_number=lesson_num,
                             lesson=LessonModel(**lesson),
@@ -233,7 +251,7 @@ async def find_room(conn: AsyncIOMotorClient, room_name: str) -> RoomScheduleMod
 
 
 async def update_schedule_updates(
-    conn: AsyncIOMotorClient, updates: List[ScheduleUpdateModel]
+    conn: AsyncMongoClient, updates: list[ScheduleUpdateModel]
 ):
     for update in updates:
         groups_list = []
@@ -248,17 +266,17 @@ async def update_schedule_updates(
 
         if update_in_db:
             await conn[DATABASE_NAME][SCHEDULE_UPDATES_COLLECTION].update_one(
-                {"_id": update_in_db["_id"]}, {"$set": update.dict()}
+                {"_id": update_in_db["_id"]}, {"$set": update.model_dump()}
             )
         else:
             await conn[DATABASE_NAME][SCHEDULE_UPDATES_COLLECTION].insert_one(
-                update.dict()
+                update.model_dump()
             )
 
 
 async def get_all_schedule_updates(
-    conn: AsyncIOMotorClient,
-) -> List[ScheduleUpdateModel]:
+    conn: AsyncMongoClient,
+) -> list[ScheduleUpdateModel]:
     cursor = conn[DATABASE_NAME][SCHEDULE_UPDATES_COLLECTION].find({}, {"_id": 0})
 
     updates = await cursor.to_list(None)
@@ -267,7 +285,7 @@ async def get_all_schedule_updates(
 
 
 async def get_schedule_update_by_group(
-    conn: AsyncIOMotorClient, group: str
+    conn: AsyncMongoClient, group: str
 ) -> ScheduleUpdateModel:
     update = await conn[DATABASE_NAME][SCHEDULE_UPDATES_COLLECTION].find_one(
         {"groups": {"$elemMatch": {"$regex": group}}}, {"_id": 0}
@@ -277,13 +295,13 @@ async def get_schedule_update_by_group(
         return ScheduleUpdateModel(**update)
 
 
-async def update_group_stats(conn: AsyncIOMotorClient, group: str):
-    update = await conn[DATABASE_NAME][SCHEDULE_GROUPS_STATS].update_one(
+async def update_group_stats(conn: AsyncMongoClient, group: str):
+    await conn[DATABASE_NAME][SCHEDULE_GROUPS_STATS].update_one(
         {"group": group}, {"$inc": {"received": 1}}, upsert=True
     )
 
 
-async def get_groups_stats(conn: AsyncIOMotorClient) -> List[GroupStatsModel]:
+async def get_groups_stats(conn: AsyncMongoClient) -> list[GroupStatsModel]:
     cursor = conn[DATABASE_NAME][SCHEDULE_GROUPS_STATS].find({}, {"_id": 0})
 
     groups_stats = await cursor.to_list(None)

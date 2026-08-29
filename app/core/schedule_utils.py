@@ -1,50 +1,29 @@
 import datetime
+from zoneinfo import ZoneInfo
 
-import pytz
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 class ScheduleUtils:
     @staticmethod
-    def get_week(date: datetime.datetime = None) -> int:
-        """Возвращает номер учебной недели по дате
+    def get_week(value: datetime.datetime | None = None) -> int:
+        """Return the one-based academic week number for a date."""
 
-        Args:
-            date (datetime.datetime, optional): Дата, для которой необходимо получить учебную неделю.
-        """
-        now = ScheduleUtils.now_date() if date is None else date
-        start_date = ScheduleUtils.get_semester_start(date)
+        current = ScheduleUtils.now_date() if value is None else value
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=MOSCOW_TZ)
 
-        if now.timestamp() < start_date.timestamp():
-            return 1
-
-        week = now.isocalendar()[1] - start_date.isocalendar()[1]
-
-        if now.isocalendar()[2] != 0:
-            week += 1
-
-        return week
+        semester_start = ScheduleUtils.get_semester_start(current)
+        first_monday = semester_start - datetime.timedelta(days=semester_start.weekday())
+        return max(1, (current.date() - first_monday.date()).days // 7 + 1)
 
     @staticmethod
-    def get_semester_start(date: datetime.datetime = None) -> datetime.datetime:
-        """Возвращает дату начала семестра по дате
-
-        Args:
-            date (datetime.datetime, optional): Дата для расчёта начала семестра.
-        """
-        date = ScheduleUtils.now_date() if date is None else date
-        if date.month >= 9:
-            return ScheduleUtils.get_first_semester()
-        else:
-            return ScheduleUtils.get_second_semester()
+    def get_semester_start(value: datetime.datetime | None = None) -> datetime.datetime:
+        current = ScheduleUtils.now_date() if value is None else value
+        if current.month >= 9:
+            return datetime.datetime(current.year, 9, 1, tzinfo=MOSCOW_TZ)
+        return datetime.datetime(current.year, 2, 9, tzinfo=MOSCOW_TZ)
 
     @staticmethod
     def now_date() -> datetime.datetime:
-        return datetime.datetime.now(pytz.timezone("Europe/Moscow"))
-
-    @staticmethod
-    def get_first_semester() -> datetime.datetime:
-        return datetime.datetime(ScheduleUtils.now_date().year, 9, 1)
-
-    @staticmethod
-    def get_second_semester() -> datetime.datetime:
-        return datetime.datetime(ScheduleUtils.now_date().year, 2, 9)
+        return datetime.datetime.now(MOSCOW_TZ)

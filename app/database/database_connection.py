@@ -1,12 +1,18 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
-from ..core.config import MONGODB_URL
+from ..core.config import MAX_CONNECTIONS_COUNT, MIN_CONNECTIONS_COUNT, MONGODB_URL
 from .database import db
 
 
 async def connect_to_mongo():
-    db.client = AsyncIOMotorClient(MONGODB_URL)
+    db.client = AsyncMongoClient(
+        MONGODB_URL,
+        minPoolSize=MIN_CONNECTIONS_COUNT,
+        maxPoolSize=MAX_CONNECTIONS_COUNT,
+    )
 
 
 async def close_mongo_connection():
-    db.client.close()
+    if db.client is not None:
+        await db.client.close()
+        db.client = None

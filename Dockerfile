@@ -1,19 +1,16 @@
-﻿FROM tiangolo/uvicorn-gunicorn-fastapi:latest
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-COPY requirements.txt /app/
+WORKDIR /app
 
-WORKDIR /app/
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-RUN apt-get update && \
-    apt-get install -y python3-venv && \
-    pip install --no-cache-dir --upgrade pip && \
-    pip cache remove rtu-schedule-parser && \
-    pip install --no-cache-dir -r requirements.txt
+COPY app ./app
 
-COPY /app/ /app/app/
+EXPOSE 5000
 
-ENV PORT="${PORT:-5000}"
-ENV APP_MODULE="app.main:app"
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]

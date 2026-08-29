@@ -1,12 +1,14 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
 
 class DataBase:
-    client: AsyncIOMotorClient = None
+    client: AsyncMongoClient | None = None
 
 
 db = DataBase()
 
 
-def get_database() -> AsyncIOMotorClient:
+def get_database() -> AsyncMongoClient:
+    if db.client is None:
+        raise RuntimeError("MongoDB client is not initialized")
     return db.client

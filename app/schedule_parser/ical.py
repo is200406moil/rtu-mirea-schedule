@@ -7,19 +7,20 @@ from itertools import groupby
 from typing import Any
 
 import requests
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
-from ..crud.schedule import save_schedule
-from ..models.schedule import (LessonModel, ScheduleByWeekdaysModel,
-                               ScheduleLessonsModel)
 from ..core.schedule_utils import ScheduleUtils
+from ..crud.schedule import save_schedule
+from ..models.schedule import LessonModel, ScheduleByWeekdaysModel, ScheduleLessonsModel
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SCHEDULE_OF_BASE_URL = "https://schedule-of.mirea.ru"
 SEARCH_URL = f"{SCHEDULE_OF_BASE_URL}/schedule/api/search"
-ICAL_URL_TEMPLATE = f"{SCHEDULE_OF_BASE_URL}/schedule/api/ical/{{schedule_target}}/{{group_id}}?includeMeta=true"
+ICAL_URL_TEMPLATE = (
+    f"{SCHEDULE_OF_BASE_URL}/schedule/api/ical/"
+    "{schedule_target}/{group_id}?includeMeta=true"
+)
 GROUP_NAME_RE = re.compile(r"^[А-ЯA-ZЁ]{2,6}-\d{2}-\d{2}$")
 REQUEST_HEADERS = {"User-Agent": "rtu-mirea-schedule-bot/1.0"}
 
@@ -121,7 +122,6 @@ async def _extract_group_items(client: requests.Session) -> list[dict[str, Any]]
 
 async def _parse_group_ical(
     client: requests.Session,
-    group_name: str,
     schedule_target: int,
     group_id: int,
 ) -> ScheduleByWeekdaysModel:
@@ -221,38 +221,34 @@ async def _parse_group_ical(
         saturday=by_day_models["6"],
     )
 
-async def parse_schedule(conn: AsyncIOMotorClient) -> None:
+async def parse_schedule(conn: AsyncMongoClient) -> int:
     """Parse schedule-of API and save parsed group schedules to database."""
 
     client = requests.Session()
     try:
         groups = await _extract_group_items(client)
-    except Exception as error:
-        logger.error("Failed to discover groups from schedule-of API: %s", error)
+        if not groups:
+            raise RuntimeError("No groups were discovered in schedule-of API")
+
+        saved = 0
+        for group in groups:
+            group_name = group.get("targetTitle", "")
+            group_id = group.get("id")
+            schedule_target = group.get("scheduleTarget")
+
+            if not group_name or group_id is None or schedule_target is None:
+                continue
+
+            try:
+                by_weekdays = await _parse_group_ical(client, schedule_target, group_id)
+                await save_schedule(conn, group_name, by_weekdays)
+                saved += 1
+            except Exception as error:
+                logger.error("Failed to parse %s: %s", group_name, error)
+
+            await asyncio.sleep(0.02)
+    finally:
         client.close()
-        return
-    if not groups:
-        logger.warning("No groups were discovered in schedule-of API")
-        client.close()
-        return
 
-    saved = 0
-    for group in groups:
-        group_name = group.get("targetTitle", "")
-        group_id = group.get("id")
-        schedule_target = group.get("scheduleTarget")
-
-        if not group_name or group_id is None or schedule_target is None:
-            continue
-
-        try:
-            by_weekdays = await _parse_group_ical(client, group_name, schedule_target, group_id)
-            await save_schedule(conn, group_name, by_weekdays)
-            saved += 1
-        except Exception as error:
-            logger.error("Failed to parse %s: %s", group_name, error)
-
-        await asyncio.sleep(0.02)
-
-    client.close()
     logger.info("Saved schedules for %s groups", saved)
+    return saved

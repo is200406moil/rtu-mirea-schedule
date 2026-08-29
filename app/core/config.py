@@ -4,7 +4,16 @@ from dotenv import load_dotenv
 
 load_dotenv(".env")
 
-SECRET_REFRESH_KEY = str(os.getenv("SECRET_REFRESH_KEY", None))
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DEBUG = env_flag("DEBUG")
+SECRET_REFRESH_KEY = os.getenv("SECRET_REFRESH_KEY")
 
 MAX_CONNECTIONS_COUNT = int(os.getenv("MAX_CONNECTIONS_COUNT", 10))
 MIN_CONNECTIONS_COUNT = int(os.getenv("MIN_CONNECTIONS_COUNT", 10))

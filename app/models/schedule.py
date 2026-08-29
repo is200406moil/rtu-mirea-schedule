@@ -1,7 +1,6 @@
 import datetime
-from typing import List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WeekModelResponse(BaseModel):
@@ -10,24 +9,26 @@ class WeekModelResponse(BaseModel):
 
 class GroupsListResponse(BaseModel):
     count: int
-    groups: List[str]
+    groups: list[str]
 
 
 class LessonModel(BaseModel):
     name: str
-    weeks: List[int]
+    weeks: list[int]
     time_start: str
     time_end: str
     types: str
-    teachers: List[str]
-    rooms: List[str]
+    teachers: list[str]
+    rooms: list[str]
 
 
 class ScheduleLessonsModel(BaseModel):
-    lessons: List[List[LessonModel]]
+    lessons: list[list[LessonModel]]
 
 
 class ScheduleByWeekdaysModelResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     monday: ScheduleLessonsModel = Field(..., alias="1", title="monday")
     tuesday: ScheduleLessonsModel = Field(..., alias="2", title="tuesday")
     wednesday: ScheduleLessonsModel = Field(..., alias="3", title="wednesday")
@@ -58,21 +59,23 @@ class TeacherLessonModel(BaseModel):
 
 
 class RoomLessonModel(BaseModel):
+    group: str
     room: str
     weekday: int
+    lesson_number: int
     lesson: LessonModel
 
 
 class RoomScheduleModel(BaseModel):
-    schedules: List[RoomLessonModel]
+    schedules: list[RoomLessonModel]
 
 
 class TeacherSchedulesModelResponse(BaseModel):
-    schedules: List[TeacherLessonModel]
+    schedules: list[TeacherLessonModel]
 
 
 class ScheduleUpdateModel(BaseModel):
-    groups: List[str]
+    groups: list[str]
     updated_at: datetime.datetime
 
 
