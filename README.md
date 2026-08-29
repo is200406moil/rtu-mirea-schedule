@@ -2,7 +2,7 @@
 
 API для получения расписания учебных групп РТУ МИРЭА. Сервис читает публичный источник расписания, разбирает iCalendar, сохраняет нормализованные данные в MongoDB и отдаёт их через FastAPI.
 
-> Репозиторий основан на открытом проекте [Mirea Ninja / Schedule-RTU-API](https://github.com/RTUITLab/Schedule-RTU-API) и сохраняет его MIT-лицензию. Мой вклад в эту версию: переход со старого Excel-парсера на публичный `schedule-of` API и iCalendar, повторные HTTP-запросы с задержкой, фоновое обновление и endpoint его статуса. [Исходный коммит с этой доработкой](https://github.com/is200406moil/rtu-mirea-schedule/commit/428d84d83d5a4ac91de1c3079f8f45ee9c503bf9). Остальные API-сценарии развивались авторами исходного проекта.
+> Репозиторий — форк [0niel/rtu-mirea-schedule](https://github.com/0niel/rtu-mirea-schedule), основанный на открытом проекте [RTUITLab/Schedule-RTU-API](https://github.com/RTUITLab/Schedule-RTU-API), и сохраняет исходную MIT-лицензию. Мой вклад в эту версию: переход со старого Excel-парсера на публичный `schedule-of` API и iCalendar, повторные HTTP-запросы с задержкой, фоновое обновление и endpoint его статуса. [Исходный коммит с этой доработкой](https://github.com/is200406moil/rtu-mirea-schedule/commit/428d84d83d5a4ac91de1c3079f8f45ee9c503bf9). Остальные API-сценарии развивались авторами исходных проектов.
 
 ## Возможности
 
