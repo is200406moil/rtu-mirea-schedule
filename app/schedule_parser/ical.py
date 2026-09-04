@@ -10,7 +10,7 @@ import requests
 from pymongo import AsyncMongoClient
 
 from ..core.schedule_utils import ScheduleUtils
-from ..crud.schedule import save_schedule
+from ..crud.schedule import replace_all_schedules
 from ..models.schedule import LessonModel, ScheduleByWeekdaysModel, ScheduleLessonsModel
 
 logger = logging.getLogger(__name__)
@@ -96,11 +96,7 @@ async def _extract_group_items(client: requests.Session) -> list[dict[str, Any]]
         if page_token:
             params["pageToken"] = page_token
 
-        try:
-            payload = (await _request(client, SEARCH_URL, params=params, timeout=20)).json()
-        except Exception as error:
-            logger.error("Failed to read search page token=%s: %s", page_token, error)
-            break
+        payload = (await _request(client, SEARCH_URL, params=params, timeout=20)).json()
 
         for item in payload.get("data", []):
             title = item.get("targetTitle", "")
@@ -113,6 +109,8 @@ async def _extract_group_items(client: requests.Session) -> list[dict[str, Any]]
 
         # Avoid aggressive request bursts that can trigger upstream disconnects.
         await asyncio.sleep(0.05)
+    else:
+        raise RuntimeError("Schedule search pagination exceeded the safety limit")
 
     result = list(groups.values())
     logger.info("Discovered %s groups in schedule-of API", len(result))
@@ -221,8 +219,12 @@ async def _parse_group_ical(
     )
 
 
+class ScheduleRefreshError(RuntimeError):
+    pass
+
+
 async def parse_schedule(conn: AsyncMongoClient) -> int:
-    """Parse schedule-of API and save parsed group schedules to database."""
+    """Build a complete dataset and atomically publish it to MongoDB."""
 
     client = requests.Session()
     try:
@@ -230,25 +232,38 @@ async def parse_schedule(conn: AsyncMongoClient) -> int:
         if not groups:
             raise RuntimeError("No groups were discovered in schedule-of API")
 
-        saved = 0
+        parsed: dict[str, ScheduleByWeekdaysModel] = {}
+        failures: list[str] = []
         for group in groups:
             group_name = group.get("targetTitle", "")
             group_id = group.get("id")
             schedule_target = group.get("scheduleTarget")
 
             if not group_name or group_id is None or schedule_target is None:
+                failures.append(group_name or "<unknown group>")
                 continue
 
             try:
-                by_weekdays = await _parse_group_ical(client, schedule_target, group_id)
-                await save_schedule(conn, group_name, by_weekdays)
-                saved += 1
+                parsed[group_name] = await _parse_group_ical(
+                    client,
+                    schedule_target,
+                    group_id,
+                )
             except Exception as error:
                 logger.error("Failed to parse %s: %s", group_name, error)
+                failures.append(group_name)
 
             await asyncio.sleep(0.02)
+
+        if failures:
+            sample = ", ".join(failures[:5])
+            raise ScheduleRefreshError(
+                f"Failed to parse {len(failures)} of {len(groups)} groups: {sample}"
+            )
+
+        await replace_all_schedules(conn, parsed)
     finally:
         client.close()
 
-    logger.info("Saved schedules for %s groups", saved)
-    return saved
+    logger.info("Published schedules for %s groups", len(parsed))
+    return len(parsed)

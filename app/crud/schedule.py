@@ -1,13 +1,18 @@
 import re
+import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from pymongo import AsyncMongoClient
+from pymongo import AsyncMongoClient, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.core.config import (
     DATABASE_NAME,
     SCHEDULE_COLLECTION_NAME,
     SCHEDULE_GROUPS_STATS,
+    SCHEDULE_REFRESH_LOCKS,
+    SCHEDULE_REFRESH_STATUS,
     SCHEDULE_UPDATES_COLLECTION,
 )
 from app.models.schedule import (
@@ -60,16 +65,109 @@ def _lessons(document: dict[str, Any]) -> Iterator[tuple[int, int, dict[str, Any
                 yield weekday_number, lesson_number, lesson
 
 
-async def save_schedule(
+async def replace_all_schedules(
     conn: AsyncMongoClient,
-    group: str,
-    schedule: ScheduleByWeekdaysModel,
+    schedules: dict[str, ScheduleByWeekdaysModel],
 ) -> None:
-    await conn[DATABASE_NAME][SCHEDULE_COLLECTION_NAME].replace_one(
-        {"group": group},
-        {"group": group, "schedule": schedule.model_dump()},
+    """Replace the public schedule collection only after all data is ready."""
+
+    if not schedules:
+        raise ValueError("Cannot replace schedules with an empty dataset")
+
+    database = conn[DATABASE_NAME]
+    staging_name = f"{SCHEDULE_COLLECTION_NAME}_staging_{uuid.uuid4().hex}"
+    staging = database[staging_name]
+    documents = [
+        {"group": group, "schedule": schedule.model_dump()} for group, schedule in schedules.items()
+    ]
+    try:
+        await staging.insert_many(documents, ordered=False)
+        await staging.create_index("group", unique=True)
+        await staging.rename(SCHEDULE_COLLECTION_NAME, dropTarget=True)
+    except Exception:
+        await staging.drop()
+        raise
+
+
+async def acquire_refresh_lock(
+    conn: AsyncMongoClient,
+    *,
+    owner: str,
+    ttl_seconds: int,
+) -> bool:
+    now = datetime.now(UTC)
+    collection = conn[DATABASE_NAME][SCHEDULE_REFRESH_LOCKS]
+    try:
+        lock = await collection.find_one_and_update(
+            {
+                "_id": "schedule-refresh",
+                "$or": [
+                    {"locked_until": {"$lte": now}},
+                    {"locked_until": {"$exists": False}},
+                ],
+            },
+            {
+                "$set": {
+                    "owner": owner,
+                    "locked_until": now + timedelta(seconds=ttl_seconds),
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        return False
+    return lock is not None and lock.get("owner") == owner
+
+
+async def release_refresh_lock(conn: AsyncMongoClient, *, owner: str) -> None:
+    await conn[DATABASE_NAME][SCHEDULE_REFRESH_LOCKS].delete_one(
+        {"_id": "schedule-refresh", "owner": owner}
+    )
+
+
+async def set_refresh_status(
+    conn: AsyncMongoClient,
+    *,
+    state: str,
+    message: str,
+) -> None:
+    await conn[DATABASE_NAME][SCHEDULE_REFRESH_STATUS].update_one(
+        {"_id": "schedule-refresh"},
+        {
+            "$set": {
+                "state": state,
+                "message": message,
+                "updated_at": datetime.now(UTC),
+            }
+        },
         upsert=True,
     )
+
+
+async def get_refresh_status(conn: AsyncMongoClient) -> dict[str, object]:
+    status = await conn[DATABASE_NAME][SCHEDULE_REFRESH_STATUS].find_one(
+        {"_id": "schedule-refresh"},
+        {"_id": 0},
+    )
+    if status is None:
+        status = {"state": "idle", "message": "Refresh was not started yet"}
+
+    lock = await conn[DATABASE_NAME][SCHEDULE_REFRESH_LOCKS].find_one(
+        {"_id": "schedule-refresh"},
+        {"_id": 0},
+    )
+    locked_until = lock.get("locked_until") if lock else None
+    if isinstance(locked_until, datetime) and locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=UTC)
+    running = bool(locked_until and locked_until > datetime.now(UTC))
+    if status.get("state") == "running" and not running:
+        status = {
+            **status,
+            "state": "failed",
+            "message": "Refresh worker stopped or its lock expired",
+        }
+    return {"running": running, "detail": status}
 
 
 async def get_full_schedule(

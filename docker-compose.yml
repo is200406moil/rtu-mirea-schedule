@@ -18,6 +18,7 @@ services:
       DEBUG: ${DEBUG:-false}
       MONGODB_URL: mongodb://mongodb:27017
       SECRET_REFRESH_KEY: ${SECRET_REFRESH_KEY:-development-only}
+      REFRESH_LOCK_SECONDS: ${REFRESH_LOCK_SECONDS:-3600}
     ports:
       - "5000:5000"
     healthcheck:

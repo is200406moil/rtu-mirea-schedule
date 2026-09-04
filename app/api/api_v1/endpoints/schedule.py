@@ -1,19 +1,24 @@
 import asyncio
 import logging
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
 from pymongo import AsyncMongoClient
 from starlette.status import HTTP_404_NOT_FOUND
 
-from app.core.config import SECRET_REFRESH_KEY
+from app.core.config import REFRESH_LOCK_SECONDS, SECRET_REFRESH_KEY
 from app.core.schedule_utils import ScheduleUtils
 from app.crud.schedule import (
+    acquire_refresh_lock,
     find_room,
     find_teacher,
     get_full_schedule,
     get_groups,
     get_groups_stats,
+    get_refresh_status,
+    release_refresh_lock,
+    set_refresh_status,
     update_group_stats,
 )
 from app.database.database import get_database
@@ -30,7 +35,6 @@ from app.schedule_parser.ical import parse_schedule
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _refresh_task: asyncio.Task[None] | None = None
-_refresh_status: dict[str, str] = {"state": "idle", "message": "Refresh was not started yet"}
 
 
 def _authorize_refresh(refresh_key: str | None) -> None:
@@ -46,22 +50,23 @@ def _authorize_refresh(refresh_key: str | None) -> None:
         )
 
 
-async def _run_refresh(db: AsyncMongoClient) -> None:
-    global _refresh_status
-
-    _refresh_status = {"state": "running", "message": "Refresh in progress"}
+async def _run_refresh(db: AsyncMongoClient, owner: str) -> None:
     try:
         saved = await parse_schedule(db)
-        _refresh_status = {
-            "state": "ok",
-            "message": f"Refresh completed: {saved} groups saved",
-        }
+        await set_refresh_status(
+            db,
+            state="ok",
+            message=f"Refresh completed: {saved} groups saved",
+        )
     except Exception:
         logger.exception("Refresh failed")
-        _refresh_status = {
-            "state": "failed",
-            "message": "Refresh failed; check application logs",
-        }
+        await set_refresh_status(
+            db,
+            state="failed",
+            message="Refresh failed; the previous dataset is still active",
+        )
+    finally:
+        await release_refresh_lock(db, owner=owner)
 
 
 @router.post(
@@ -73,19 +78,26 @@ async def refresh(
     db: AsyncMongoClient = Depends(get_database),
     refresh_key: str | None = Header(default=None, alias="X-Refresh-Key"),
 ) -> dict[str, object]:
-    global _refresh_task, _refresh_status
+    global _refresh_task
 
     _authorize_refresh(refresh_key)
-
-    if _refresh_task and not _refresh_task.done():
+    owner = uuid.uuid4().hex
+    if not await acquire_refresh_lock(
+        db,
+        owner=owner,
+        ttl_seconds=REFRESH_LOCK_SECONDS,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Schedule refresh is already running",
         )
 
-    _refresh_status = {"state": "running", "message": "Refresh in progress"}
-    _refresh_task = asyncio.create_task(_run_refresh(db))
-    return {"status": "started", "detail": _refresh_status}
+    await set_refresh_status(db, state="running", message="Refresh in progress")
+    _refresh_task = asyncio.create_task(_run_refresh(db, owner))
+    return {
+        "status": "started",
+        "detail": {"state": "running", "message": "Refresh in progress"},
+    }
 
 
 @router.get(
@@ -93,12 +105,11 @@ async def refresh(
     description="Get current refresh status",
 )
 async def refresh_status(
+    db: AsyncMongoClient = Depends(get_database),
     refresh_key: str | None = Header(default=None, alias="X-Refresh-Key"),
 ) -> dict[str, object]:
     _authorize_refresh(refresh_key)
-
-    running = bool(_refresh_task and not _refresh_task.done())
-    return {"running": running, "detail": _refresh_status}
+    return await get_refresh_status(db)
 
 
 @router.get(

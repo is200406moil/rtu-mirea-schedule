@@ -9,6 +9,7 @@ async def connect_to_mongo():
         MONGODB_URL,
         minPoolSize=MIN_CONNECTIONS_COUNT,
         maxPoolSize=MAX_CONNECTIONS_COUNT,
+        tz_aware=True,
     )
 
 
