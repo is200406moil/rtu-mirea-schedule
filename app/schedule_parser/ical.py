@@ -18,8 +18,7 @@ logger = logging.getLogger(__name__)
 SCHEDULE_OF_BASE_URL = "https://schedule-of.mirea.ru"
 SEARCH_URL = f"{SCHEDULE_OF_BASE_URL}/schedule/api/search"
 ICAL_URL_TEMPLATE = (
-    f"{SCHEDULE_OF_BASE_URL}/schedule/api/ical/"
-    "{schedule_target}/{group_id}?includeMeta=true"
+    f"{SCHEDULE_OF_BASE_URL}/schedule/api/ical/{{schedule_target}}/{{group_id}}?includeMeta=true"
 )
 GROUP_NAME_RE = re.compile(r"^[А-ЯA-ZЁ]{2,6}-\d{2}-\d{2}$")
 REQUEST_HEADERS = {"User-Agent": "rtu-mirea-schedule-bot/1.0"}
@@ -220,6 +219,7 @@ async def _parse_group_ical(
         friday=by_day_models["5"],
         saturday=by_day_models["6"],
     )
+
 
 async def parse_schedule(conn: AsyncMongoClient) -> int:
     """Parse schedule-of API and save parsed group schedules to database."""

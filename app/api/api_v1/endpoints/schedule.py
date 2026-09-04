@@ -137,12 +137,6 @@ async def groups_list(db: AsyncMongoClient = Depends(get_database)):
             detail="Groups not found",
         )
 
-    if len(groups) == 0:
-        raise HTTPException(
-            status_code=HTTP_404_NOT_FOUND,
-            detail="Groups are empty. Maybe schedule is not parsed yet",
-        )
-
     return GroupsListResponse(groups=groups, count=len(groups))
 
 
@@ -161,7 +155,8 @@ async def current_week():
     response_model=TeacherSchedulesModelResponse,
 )
 async def teacher_schedule(
-    teacher_name: str = Path(...), db: AsyncMongoClient = Depends(get_database)
+    teacher_name: str = Path(..., min_length=2, max_length=120),
+    db: AsyncMongoClient = Depends(get_database),
 ):
     schedule = await find_teacher(db, teacher_name)
 
@@ -180,7 +175,8 @@ async def teacher_schedule(
     response_model=RoomScheduleModel,
 )
 async def room_schedule(
-    room_name: str = Path(...), db: AsyncMongoClient = Depends(get_database)
+    room_name: str = Path(..., min_length=1, max_length=120),
+    db: AsyncMongoClient = Depends(get_database),
 ):
     schedule = await find_room(db, room_name)
 
