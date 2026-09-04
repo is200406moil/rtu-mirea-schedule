@@ -17,6 +17,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: python -m pytest
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.lock
+      - name: Check Python lint
+        run: python -m ruff check .
+      - name: Check Python formatting
+        run: python -m ruff format --check app tests
+      - name: Audit Python dependencies
+        run: python -m pip_audit --requirement requirements-dev.lock
+      - name: Run tests with coverage
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=70
+      - name: Build container
+        run: docker build --tag rtu-mirea-schedule:test .
