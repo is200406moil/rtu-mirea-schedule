@@ -50,7 +50,8 @@ docker compose up --build
 
 - Swagger UI: <http://localhost:5000/docs>;
 - OpenAPI: <http://localhost:5000/api/openapi.json>;
-- healthcheck: <http://localhost:5000/health>.
+- проверка процесса: <http://localhost:5000/health>;
+- проверка готовности MongoDB: <http://localhost:5000/ready>.
 
 MongoDB стартует вместе с приложением. Для локальной демонстрации используется служебный ключ `development-only`; при любом внешнем развёртывании задайте `SECRET_REFRESH_KEY` через окружение.
 
@@ -101,7 +102,7 @@ python -m pytest --cov=app --cov-branch --cov-report=term-missing --cov-fail-und
 python -m pip_audit --requirement requirements-dev.lock
 ```
 
-Тесты проверяют разбор iCalendar, расчёт учебной недели, поиск, служебный endpoint, атомарную замену коллекции и распределённую блокировку. CI измеряет покрытие строк и ветвлений; интеграционный тест MongoDB запускается при наличии `TEST_MONGODB_URL`, а в CI база поднимается автоматически.
+Тесты проверяют разбор iCalendar, расчёт учебной недели, поиск, служебный endpoint, readiness MongoDB, атомарную замену коллекции и распределённую блокировку. CI измеряет покрытие строк и ветвлений; интеграционный тест MongoDB запускается при наличии `TEST_MONGODB_URL`, а в CI база поднимается автоматически. Контейнер запускает приложение без прав `root`.
 
 ## Ограничения
 

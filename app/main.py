@@ -1,11 +1,14 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import RedirectResponse
+from pymongo import AsyncMongoClient
+from pymongo.errors import PyMongoError
 from starlette.middleware.cors import CORSMiddleware
 
 from .api.api_v1.router import router as api_router
 from .core.config import API_V1_PREFIX, DEBUG
+from .database.database import get_database
 from .database.database_connection import close_mongo_connection, connect_to_mongo
 
 
@@ -45,3 +48,17 @@ def root() -> RedirectResponse:
 @app.get("/health", tags=["system"])
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["system"])
+async def readiness_check(
+    database: AsyncMongoClient = Depends(get_database),
+) -> dict[str, str]:
+    try:
+        await database.admin.command("ping")
+    except PyMongoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MongoDB is unavailable",
+        ) from exc
+    return {"status": "ready"}

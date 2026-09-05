@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+from pymongo.errors import PyMongoError
 
 from app.api.api_v1.endpoints import schedule
+from app.database.database import get_database
 from app.main import app
 
 
@@ -10,6 +12,45 @@ def test_healthcheck() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_readiness_check_confirms_mongodb_connection() -> None:
+    class AvailableAdmin:
+        async def command(self, name: str) -> dict[str, int]:
+            assert name == "ping"
+            return {"ok": 1}
+
+    class AvailableDatabase:
+        admin = AvailableAdmin()
+
+    app.dependency_overrides[get_database] = lambda: AvailableDatabase()
+    try:
+        with TestClient(app) as client:
+            response = client.get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_database, None)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_readiness_check_reports_mongodb_failure() -> None:
+    class UnavailableAdmin:
+        async def command(self, _name: str) -> None:
+            raise PyMongoError("database unavailable")
+
+    class UnavailableDatabase:
+        admin = UnavailableAdmin()
+
+    app.dependency_overrides[get_database] = lambda: UnavailableDatabase()
+    try:
+        with TestClient(app) as client:
+            response = client.get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_database, None)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "MongoDB is unavailable"}
 
 
 def test_refresh_requires_header(monkeypatch) -> None:
