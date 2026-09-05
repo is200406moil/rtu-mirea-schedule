@@ -97,11 +97,11 @@ Windows PowerShell:
 pip install -r requirements-dev.txt
 python -m ruff check .
 python -m ruff format --check app tests
-python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=70
+python -m pytest --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=70
 python -m pip_audit --requirement requirements-dev.lock
 ```
 
-Тесты проверяют разбор iCalendar, расчёт учебной недели, поиск, служебный endpoint, атомарную замену коллекции и распределённую блокировку. Интеграционный тест MongoDB запускается при наличии `TEST_MONGODB_URL`; в CI база поднимается автоматически.
+Тесты проверяют разбор iCalendar, расчёт учебной недели, поиск, служебный endpoint, атомарную замену коллекции и распределённую блокировку. CI измеряет покрытие строк и ветвлений; интеграционный тест MongoDB запускается при наличии `TEST_MONGODB_URL`, а в CI база поднимается автоматически.
 
 ## Ограничения
 

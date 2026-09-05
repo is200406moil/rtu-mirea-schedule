@@ -41,6 +41,6 @@ jobs:
       - name: Audit Python dependencies
         run: python -m pip_audit --requirement requirements-dev.lock
       - name: Run tests with coverage
-        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=70
+        run: python -m pytest --cov=app --cov-branch --cov-report=term-missing --cov-fail-under=70
       - name: Build container
         run: docker build --tag rtu-mirea-schedule:test .
